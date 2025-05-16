@@ -1,6 +1,6 @@
 streamlit
 gdown
-opencv-python
+opencv-python-headless
 mediapipe
 pillow
 pandas
