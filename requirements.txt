@@ -1,0 +1,6 @@
+streamlit
+gdown
+opencv-python
+mediapipe
+pillow
+pandas
