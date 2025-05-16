@@ -23,6 +23,7 @@ def main():
     st.title("Face Cropper Service")
     st.markdown(
         "Upload a CSV containing a `file_id` column (Google Drive IDs)."  
+        "For example, in the google drive link https://drive.google.com/open?id=1234567890, the file_id is 1234567890"
         "The app will download each image, detect & crop faces, and package the results for you."
     )
 
@@ -56,17 +57,6 @@ def main():
                 file_name="cropped_faces.zip",
                 mime="application/zip"
             )
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Deployment**")
-    st.sidebar.markdown(
-        """
-        1. Push this repo (with `app.py` and `face_utils.py`) to GitHub.  
-        2. Go to https://streamlit.io/cloud, login and create a new app linking your repo.  
-        3. Set Python dependencies in `requirements.txt` (`streamlit`, `gdown`, `opencv-python`, `mediapipe`, `pillow`, `pandas`).  
-        4. Deploy! Your service will be live at a `streamlit.app` URL."
-        """
-    )
 
 
 if __name__ == "__main__":
