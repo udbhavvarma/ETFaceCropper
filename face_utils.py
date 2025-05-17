@@ -39,15 +39,17 @@ def download_file(file_id, download_folder="downloaded_images"):
 
 def crop_faces_mediapipe(
     image_path,
+    cropped_folder="cropped_faces",
     top_padding_ratio=0.6,
     bottom_padding_ratio=0.4,
     left_padding_ratio=0.4,
     right_padding_ratio=0.4,
-    cropped_folder="cropped_faces"
+    base_name=None
 ):
     """
     Detect and crop faces from an image using MediaPipe, applying padding ratios.
     Saves each face crop into cropped_folder and returns list of paths.
+    If base_name is provided, uses that for naming; otherwise uses image filename.
     """
     img = cv2.imread(image_path)
     if img is None:
@@ -61,6 +63,7 @@ def crop_faces_mediapipe(
         return []
 
     cropped_paths = []
+    original_name = os.path.splitext(os.path.basename(image_path))[0]
     for i, detection in enumerate(results.detections):
         bbox = detection.location_data.relative_bounding_box
         xmin = int(bbox.xmin * w)
@@ -82,7 +85,8 @@ def crop_faces_mediapipe(
 
         cropped = img[y1:y2, x1:x2]
         cropped_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-        out_name = f"{os.path.splitext(os.path.basename(image_path))[0]}_face{i+1}.jpg"
+        name = base_name or original_name
+        out_name = f"{name}_face{i+1}.jpg"
         output_path = os.path.join(cropped_folder, out_name)
         cropped_image.save(output_path)
         cropped_paths.append(output_path)
@@ -107,9 +111,10 @@ def process_csv(
         if local_path:
             cropped_images = crop_faces_mediapipe(
                 local_path,
-                cropped_folder=cropped_folder
+                cropped_folder=cropped_folder,
+                base_name=file_id
             )
-            print(f"✅ Cropped {len(cropped_images)} face(s) from {os.path.basename(local_path)}")
+            print(f"✅ Cropped {len(cropped_images)} face(s) from {file_id}")
 
     print("\n🎉 All Done!")
 
