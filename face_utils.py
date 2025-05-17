@@ -86,7 +86,7 @@ def crop_faces_mediapipe(
         cropped = img[y1:y2, x1:x2]
         cropped_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
         name = base_name or original_name
-        out_name = f"{name}_face{i+1}.jpg"
+        out_name = f"{name}.jpg"
         output_path = os.path.join(cropped_folder, out_name)
         cropped_image.save(output_path)
         cropped_paths.append(output_path)

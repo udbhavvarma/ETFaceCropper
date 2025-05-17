@@ -59,7 +59,6 @@ def main():
                 mime="application/zip"
             )
 
-    st.sidebar.markdown("---")
 
 
 if __name__ == "__main__":
