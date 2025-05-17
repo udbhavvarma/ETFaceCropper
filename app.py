@@ -23,7 +23,6 @@ def main():
     st.title("Face Cropper Service")
     st.markdown(
         "Upload a CSV containing a `file_id` column (Google Drive IDs)."  
-        "For example, in the google drive link https://drive.google.com/open?id=1234567890, the file_id is 1234567890"
         "The app will download each image, detect & crop faces, and package the results for you."
     )
 
@@ -44,9 +43,11 @@ def main():
             for idx, file_id in enumerate(ids, start=1):
                 status.text(f"({idx}/{len(ids)}) Downloading & cropping {file_id}")
                 local_path = download_file(file_id, download_folder)
+                # Pass base_name=file_id to preserve original ID in output filenames
                 crop_faces_mediapipe(
                     local_path,
-                    cropped_folder=cropped_folder
+                    cropped_folder=cropped_folder,
+                    base_name=file_id
                 )
 
             status.text("All done! Preparing download...")
@@ -57,6 +58,8 @@ def main():
                 file_name="cropped_faces.zip",
                 mime="application/zip"
             )
+
+    st.sidebar.markdown("---")
 
 
 if __name__ == "__main__":
