@@ -1,5 +1,5 @@
 streamlit
---upgrade --no-cache-dir gdown
+gdown==4.6.0
 opencv-python-headless
 mediapipe
 pillow
