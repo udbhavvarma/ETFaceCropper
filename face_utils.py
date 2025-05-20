@@ -32,7 +32,7 @@ def download_file(file_id, download_folder="downloaded_images"):
     Returns the local file path.
     """
     output_path = os.path.join(download_folder, f"{uuid.uuid4().hex}.jpg")
-    gdown.download(output_path, id=file_id, quiet=False, use_cookies=False)
+    gdown.download(id=file_id, output=output_path, quiet=False, use_cookies=False)
     return output_path
 
 
