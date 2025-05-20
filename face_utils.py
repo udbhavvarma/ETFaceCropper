@@ -31,9 +31,8 @@ def download_file(file_id, download_folder="downloaded_images"):
     Download a file from Google Drive by its file ID to the download_folder.
     Returns the local file path.
     """
-    url = f"https://drive.google.com/uc?id={file_id}"
     output_path = os.path.join(download_folder, f"{uuid.uuid4().hex}.jpg")
-    gdown.download(url, output_path, quiet=False)
+    gdown.download(output_path, id=file_id, quiet=False, use_cookies=False)
     return output_path
 
 
