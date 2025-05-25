@@ -4,6 +4,9 @@ import time
 import random
 import requests
 import cv2
+# Configure OpenCV to run in headless mode
+os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'  # Enable OpenEXR support if needed
+os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'  # Disable Media Foundation backend
 import gdown
 import pandas as pd
 import mediapipe as mp
@@ -105,48 +108,72 @@ def crop_faces_mediapipe(
     Detect and crop faces from an image using MediaPipe, applying padding ratios.
     Saves each face crop into cropped_folder and returns list of paths.
     If base_name is provided, uses that for naming; otherwise uses image filename.
+    This version is optimized for headless environments.
     """
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"❌ Could not read image {image_path}")
+    try:
+        # Read image in grayscale first to check if it's valid
+        img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"❌ Could not read image {image_path}")
+            return []
+
+        # Convert to RGB for MediaPipe
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h, w = img.shape[:2]
+        
+        # Process image
+        results = face_detector.process(rgb_img)
+        if not results.detections:
+            print(f"❌ No face found in {os.path.basename(image_path)}")
+            return []
+
+        cropped_paths = []
+        os.makedirs(cropped_folder, exist_ok=True)
+        original_name = os.path.splitext(os.path.basename(image_path))[0]
+        
+        for i, detection in enumerate(results.detections):
+            bbox = detection.location_data.relative_bounding_box
+            xmin = int(bbox.xmin * w)
+            ymin = int(bbox.ymin * h)
+            width = int(bbox.width * w)
+            height = int(bbox.height * h)
+
+            # Compute padding
+            pad_top = int(height * top_padding_ratio)
+            pad_bottom = int(height * bottom_padding_ratio)
+            pad_left = int(width * left_padding_ratio)
+            pad_right = int(width * right_padding_ratio)
+
+            # Clamp to image bounds
+            x1 = max(xmin - pad_left, 0)
+            y1 = max(ymin - pad_top, 0)
+            x2 = min(xmin + width + pad_right, w)
+            y2 = min(ymin + height + pad_bottom, h)
+
+            # Crop and save the face
+            cropped = img[y1:y2, x1:x2]
+            if cropped.size == 0:
+                print(f"⚠️ Empty crop for face {i} in {os.path.basename(image_path)}")
+                continue
+                
+            # Convert to PIL Image and save
+            try:
+                cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                cropped_image = Image.fromarray(cropped_rgb)
+                name = base_name or f"{original_name}_{i}"
+                out_name = f"{name}.jpg"
+                output_path = os.path.join(cropped_folder, out_name)
+                cropped_image.save(output_path, quality=95, optimize=True)
+                cropped_paths.append(output_path)
+            except Exception as e:
+                print(f"⚠️ Error processing face {i} in {os.path.basename(image_path)}: {str(e)}")
+                continue
+                
+        return cropped_paths
+        
+    except Exception as e:
+        print(f"❌ Error processing {image_path}: {str(e)}")
         return []
-
-    h, w, _ = img.shape
-    results = face_detector.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    if not results.detections:
-        print(f"❌ No face found in {os.path.basename(image_path)}")
-        return []
-
-    cropped_paths = []
-    original_name = os.path.splitext(os.path.basename(image_path))[0]
-    for i, detection in enumerate(results.detections):
-        bbox = detection.location_data.relative_bounding_box
-        xmin = int(bbox.xmin * w)
-        ymin = int(bbox.ymin * h)
-        width = int(bbox.width * w)
-        height = int(bbox.height * h)
-
-        # Compute padding
-        pad_top = int(height * top_padding_ratio)
-        pad_bottom = int(height * bottom_padding_ratio)
-        pad_left = int(width * left_padding_ratio)
-        pad_right = int(width * right_padding_ratio)
-
-        # Clamp to image bounds
-        x1 = max(xmin - pad_left, 0)
-        y1 = max(ymin - pad_top, 0)
-        x2 = min(xmin + width + pad_right, w)
-        y2 = min(ymin + height + pad_bottom, h)
-
-        cropped = img[y1:y2, x1:x2]
-        cropped_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-        name = base_name or original_name
-        out_name = f"{name}.jpg"
-        output_path = os.path.join(cropped_folder, out_name)
-        cropped_image.save(output_path)
-        cropped_paths.append(output_path)
-
-    return cropped_paths
 
 
 def process_csv(
