@@ -56,19 +56,19 @@ def download_file(file_id, download_folder="downloaded_images"):
     time.sleep(random.uniform(1, 3))
     
     try:
-        # Method 1: Try direct download with gdown first
-        try:
-            gdown.download(
-                id=file_id,
-                output=output_path,
-                quiet=False,
-                use_cookies=True,  # Use cookies to handle large files
-                fuzzy=True
-            )
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                return output_path
-        except Exception as e:
-            print(f"Gdown method failed, trying alternative methods... ({str(e)})")
+        # # Method 1: Try direct download with gdown first
+        # try:
+        #     gdown.download(
+        #         id=file_id,
+        #         output=output_path,
+        #         quiet=False,
+        #         use_cookies=True,  # Use cookies to handle large files
+        #         fuzzy=True
+        #     )
+        #     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        #         return output_path
+        # except Exception as e:
+        #     print(f"Gdown method failed, trying alternative methods... ({str(e)})")
         
         # Method 2: Try direct download with requests
         direct_link = get_direct_download_link(file_id)
