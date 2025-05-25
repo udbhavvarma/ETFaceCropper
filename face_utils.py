@@ -38,7 +38,7 @@ def get_direct_download_link(file_id):
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=30),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, gdown.exceptions.GdownError)),
+    retry=retry_if_exception_type(requests.exceptions.RequestException),
     reraise=True
 )
 def download_file(file_id, download_folder="downloaded_images"):
