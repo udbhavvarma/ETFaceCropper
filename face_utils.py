@@ -1,10 +1,15 @@
 import os
 import uuid
+import time
+import random
+import requests
 import cv2
 import gdown
 import pandas as pd
 import mediapipe as mp
 from PIL import Image
+from urllib.parse import urlparse, parse_qs
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Initialize MediaPipe face detector
 mp_face = mp.solutions.face_detection
@@ -26,14 +31,65 @@ def load_file_ids(csv_path):
     return df['file_id'].dropna().tolist()
 
 
+def get_direct_download_link(file_id):
+    """Convert Google Drive file ID to direct download link."""
+    return f"https://drive.google.com/uc?id={file_id}&export=download"
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=4, max=30),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, gdown.exceptions.GdownError)),
+    reraise=True
+)
 def download_file(file_id, download_folder="downloaded_images"):
     """
-    Download a file from Google Drive by its file ID to the download_folder.
-    Returns the local file path.
+    Download a file from Google Drive using multiple methods with retries.
+    Returns the local file path if successful, None otherwise.
     """
+    os.makedirs(download_folder, exist_ok=True)
     output_path = os.path.join(download_folder, f"{uuid.uuid4().hex}.jpg")
-    gdown.download(id=file_id, output=output_path, quiet=False, use_cookies=False)
-    return output_path
+    
+    # Add random delay to avoid hitting rate limits
+    time.sleep(random.uniform(1, 3))
+    
+    try:
+        # Method 1: Try direct download with gdown first
+        try:
+            gdown.download(
+                id=file_id,
+                output=output_path,
+                quiet=False,
+                use_cookies=True,  # Use cookies to handle large files
+                fuzzy=True
+            )
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return output_path
+        except Exception as e:
+            print(f"Gdown method failed, trying alternative methods... ({str(e)})")
+        
+        # Method 2: Try direct download with requests
+        direct_link = get_direct_download_link(file_id)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        with requests.get(direct_link, headers=headers, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+            
+    except Exception as e:
+        print(f"Failed to download file {file_id}: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        raise  # Re-raise to trigger retry
+    
+    return None
 
 
 def crop_faces_mediapipe(
