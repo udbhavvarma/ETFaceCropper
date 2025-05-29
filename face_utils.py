@@ -110,6 +110,13 @@ def crop_faces_mediapipe(
     If base_name is provided, uses that for naming; otherwise uses image filename.
     This version is optimized for headless environments.
     """
+    # Create a new face detector instance for each image to avoid timestamp issues
+    mp_face = mp.solutions.face_detection
+    face_detector = mp_face.FaceDetection(
+        model_selection=1, 
+        min_detection_confidence=0.5
+    )
+    
     try:
         # Read image in grayscale first to check if it's valid
         img = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -121,7 +128,7 @@ def crop_faces_mediapipe(
         rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = img.shape[:2]
         
-        # Process image
+        # Process image with timestamp=0 to avoid synchronization issues
         results = face_detector.process(rgb_img)
         if not results.detections:
             print(f"❌ No face found in {os.path.basename(image_path)}")
@@ -129,7 +136,7 @@ def crop_faces_mediapipe(
 
         cropped_paths = []
         os.makedirs(cropped_folder, exist_ok=True)
-        original_name = os.path.splitext(os.path.basename(image_path))[0]
+        original_name = base_name or os.path.splitext(os.path.basename(image_path))[0]
         
         for i, detection in enumerate(results.detections):
             bbox = detection.location_data.relative_bounding_box
@@ -160,8 +167,7 @@ def crop_faces_mediapipe(
             try:
                 cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 cropped_image = Image.fromarray(cropped_rgb)
-                name = base_name or f"{original_name}_{i}"
-                out_name = f"{name}.jpg"
+                out_name = f"{original_name}_{i}.jpg"
                 output_path = os.path.join(cropped_folder, out_name)
                 cropped_image.save(output_path, quality=95, optimize=True)
                 cropped_paths.append(output_path)
@@ -174,6 +180,9 @@ def crop_faces_mediapipe(
     except Exception as e:
         print(f"❌ Error processing {image_path}: {str(e)}")
         return []
+    finally:
+        # Always release resources
+        face_detector.close()
 
 
 def process_csv(
