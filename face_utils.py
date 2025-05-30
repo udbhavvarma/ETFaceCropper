@@ -104,8 +104,8 @@ def crop_faces_mediapipe(
     left_padding_ratio: float = 0.2,
     right_padding_ratio: float = 0.2,
     base_name: str = None,
-    min_face_size: int = 40,  # Minimum face size in pixels
-    min_confidence: float = 0.5  # Lower confidence threshold
+    min_face_size: int = 30,  # Minimum face size in pixels
+    min_confidence: float = 0.3  # Lower confidence threshold
 ) -> List[str]:
     """
     Detect and crop faces from an image using MediaPipe with improved error handling.
