@@ -11,6 +11,7 @@ import gdown
 import pandas as pd
 import mediapipe as mp
 from PIL import Image
+from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
