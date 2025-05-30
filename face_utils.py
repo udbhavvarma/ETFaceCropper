@@ -96,93 +96,176 @@ def download_file(file_id, download_folder="downloaded_images"):
 
 
 def crop_faces_mediapipe(
-    image_path,
-    cropped_folder="cropped_faces",
-    top_padding_ratio=0.6,
-    bottom_padding_ratio=0.4,
-    left_padding_ratio=0.4,
-    right_padding_ratio=0.4,
-    base_name=None
-):
+    image_path: str,
+    cropped_folder: str = "cropped_faces",
+    top_padding_ratio: float = 0.2,
+    bottom_padding_ratio: float = 0.2,
+    left_padding_ratio: float = 0.2,
+    right_padding_ratio: float = 0.2,
+    base_name: str = None,
+    min_face_size: int = 40,  # Minimum face size in pixels
+    min_confidence: float = 0.5  # Lower confidence threshold
+) -> List[str]:
     """
-    Detect and crop faces from an image using MediaPipe, applying padding ratios.
-    Saves each face crop into cropped_folder and returns list of paths.
-    If base_name is provided, uses that for naming; otherwise uses image filename.
-    This version is optimized for headless environments.
+    Detect and crop faces from an image using MediaPipe with improved error handling.
+    
+    Args:
+        image_path: Path to the input image
+        cropped_folder: Directory to save cropped faces
+        top_padding_ratio: Padding ratio for top of face
+        bottom_padding_ratio: Padding ratio for bottom of face
+        left_padding_ratio: Padding ratio for left of face
+        right_padding_ratio: Padding ratio for right of face
+        base_name: Base name for output files
+        min_face_size: Minimum face size in pixels (width or height)
+        min_confidence: Minimum confidence score for face detection (0-1)
+        
+    Returns:
+        List of paths to cropped face images
     """
-    # Create a new face detector instance for each image to avoid timestamp issues
+    # Validate input parameters
+    if not os.path.exists(image_path):
+        print(f"❌ Image not found: {image_path}")
+        return []
+        
+    if not os.access(image_path, os.R_OK):
+        print(f"❌ No read permissions for: {image_path}")
+        return []
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(cropped_folder, exist_ok=True)
+    
+    # Initialize face detector
     mp_face = mp.solutions.face_detection
     face_detector = mp_face.FaceDetection(
-        model_selection=1, 
-        min_detection_confidence=0.5
+        model_selection=1,  # 1 for general, 2 for close-up faces
+        min_detection_confidence=min_confidence
     )
     
+    cropped_paths = []
+    original_name = base_name or os.path.splitext(os.path.basename(image_path))[0]
+    
     try:
-        # Read image in grayscale first to check if it's valid
-        img = cv2.imread(image_path, cv2.IMREAD_COLOR)
-        if img is None:
-            print(f"❌ Could not read image {image_path}")
+        # Read and validate image
+        try:
+            img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if img is None:
+                print(f"❌ Could not read image (possibly corrupted): {image_path}")
+                return []
+                
+            if img.size == 0:
+                print(f"❌ Empty image: {image_path}")
+                return []
+                
+        except Exception as e:
+            print(f"❌ Error reading image {image_path}: {str(e)}")
             return []
 
         # Convert to RGB for MediaPipe
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w = img.shape[:2]
+        try:
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            h, w = img.shape[:2]
+        except Exception as e:
+            print(f"❌ Error processing image {image_path}: {str(e)}")
+            return []
         
-        # Process image with timestamp=0 to avoid synchronization issues
-        results = face_detector.process(rgb_img)
+        # Detect faces
+        try:
+            results = face_detector.process(rgb_img)
+        except Exception as e:
+            print(f"❌ Face detection failed for {image_path}: {str(e)}")
+            return []
+            
         if not results.detections:
-            print(f"❌ No face found in {os.path.basename(image_path)}")
+            print(f"ℹ️ No faces detected in {os.path.basename(image_path)}")
             return []
 
-        cropped_paths = []
-        os.makedirs(cropped_folder, exist_ok=True)
-        original_name = base_name or os.path.splitext(os.path.basename(image_path))[0]
-        
+        # Process each detected face
         for i, detection in enumerate(results.detections):
-            bbox = detection.location_data.relative_bounding_box
-            xmin = int(bbox.xmin * w)
-            ymin = int(bbox.ymin * h)
-            width = int(bbox.width * w)
-            height = int(bbox.height * h)
-
-            # Compute padding
-            pad_top = int(height * top_padding_ratio)
-            pad_bottom = int(height * bottom_padding_ratio)
-            pad_left = int(width * left_padding_ratio)
-            pad_right = int(width * right_padding_ratio)
-
-            # Clamp to image bounds
-            x1 = max(xmin - pad_left, 0)
-            y1 = max(ymin - pad_top, 0)
-            x2 = min(xmin + width + pad_right, w)
-            y2 = min(ymin + height + pad_bottom, h)
-
-            # Crop and save the face
-            cropped = img[y1:y2, x1:x2]
-            if cropped.size == 0:
-                print(f"⚠️ Empty crop for face {i} in {os.path.basename(image_path)}")
-                continue
-                
-            # Convert to PIL Image and save
             try:
-                cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                cropped_image = Image.fromarray(cropped_rgb)
-                out_name = f"{original_name}_{i}.jpg"
-                output_path = os.path.join(cropped_folder, out_name)
-                cropped_image.save(output_path, quality=95, optimize=True)
-                cropped_paths.append(output_path)
+                # Get confidence score
+                confidence = detection.score[0] if detection.score else 0
+                
+                # Skip low confidence detections
+                if confidence < min_confidence:
+                    print(f"ℹ️ Low confidence face ({confidence:.2f}) in {os.path.basename(image_path)}")
+                    continue
+                
+                # Get bounding box
+                bbox = detection.location_data.relative_bounding_box
+                xmin = int(bbox.xmin * w)
+                ymin = int(bbox.ymin * h)
+                width = int(bbox.width * w)
+                height = int(bbox.height * h)
+                
+                # Skip faces that are too small
+                if width < min_face_size or height < min_face_size:
+                    print(f"ℹ️ Face too small ({width}x{height}px) in {os.path.basename(image_path)}")
+                    continue
+                
+                # Apply padding
+                pad_top = int(height * top_padding_ratio)
+                pad_bottom = int(height * bottom_padding_ratio)
+                pad_left = int(width * left_padding_ratio)
+                pad_right = int(width * right_padding_ratio)
+                
+                # Calculate crop coordinates with bounds checking
+                x1 = max(xmin - pad_left, 0)
+                y1 = max(ymin - pad_top, 0)
+                x2 = min(xmin + width + pad_right, w)
+                y2 = min(ymin + height + pad_bottom, h)
+                
+                # Ensure valid crop dimensions
+                if x2 <= x1 or y2 <= y1:
+                    print(f"⚠️ Invalid crop dimensions in {os.path.basename(image_path)}")
+                    continue
+                
+                # Crop the face
+                try:
+                    cropped = img[y1:y2, x1:x2]
+                    if cropped.size == 0:
+                        print(f"⚠️ Empty crop for face {i} in {os.path.basename(image_path)}")
+                        continue
+                        
+                    # Convert to RGB and save
+                    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                    cropped_image = Image.fromarray(cropped_rgb)
+                    
+                    # Generate unique filename
+                    out_name = f"{original_name}_face{i+1}_{int(confidence*100)}.jpg"
+                    output_path = os.path.join(cropped_folder, out_name)
+                    
+                    # Handle filename conflicts
+                    counter = 1
+                    while os.path.exists(output_path):
+                        name, ext = os.path.splitext(out_name)
+                        output_path = os.path.join(cropped_folder, f"{name}_{counter}{ext}")
+                        counter += 1
+                    
+                    # Save with quality settings
+                    cropped_image.save(output_path, quality=95, optimize=True, subsampling=0, qtables='web_high')
+                    cropped_paths.append(output_path)
+                    
+                except Exception as e:
+                    print(f"⚠️ Error processing face {i+1} in {os.path.basename(image_path)}: {str(e)}")
+                    continue
+                    
             except Exception as e:
-                print(f"⚠️ Error processing face {i} in {os.path.basename(image_path)}: {str(e)}")
+                print(f"⚠️ Error in face processing loop for {os.path.basename(image_path)}: {str(e)}")
                 continue
                 
         return cropped_paths
         
     except Exception as e:
-        print(f"❌ Error processing {image_path}: {str(e)}")
+        print(f"❌ Unexpected error processing {image_path}: {str(e)}")
         return []
+        
     finally:
-        # Always release resources
-        face_detector.close()
+        # Clean up resources
+        try:
+            face_detector.close()
+        except:
+            pass
 
 
 def process_csv(
