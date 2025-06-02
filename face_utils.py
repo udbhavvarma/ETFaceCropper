@@ -7,7 +7,6 @@ import cv2
 # Configure OpenCV to run in headless mode
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'  # Enable OpenEXR support if needed
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'  # Disable Media Foundation backend
-import gdown
 import pandas as pd
 import mediapipe as mp
 from PIL import Image
