@@ -249,16 +249,14 @@ def crop_faces_mediapipe(
                     # Paste the cropped image using the mask
                     result.paste(cropped_image, (0, 0), mask=mask)
                     
-                    # Generate unique filename
-                    out_name = f"{original_name}_face{i+1}_{int(confidence*100)}.png"  # Using PNG for transparency
+                    # Generate filename using only the base name
+                    out_name = f"{original_name}.png"
                     output_path = os.path.join(cropped_folder, out_name)
                     
-                    # Handle filename conflicts
-                    counter = 1
-                    while os.path.exists(output_path):
-                        name, ext = os.path.splitext(out_name)
-                        output_path = os.path.join(cropped_folder, f"{name}_{counter}{ext}")
-                        counter += 1
+                    # If file exists, skip instead of renaming to avoid duplicates
+                    if os.path.exists(output_path):
+                        print(f"⚠️ File {out_name} already exists, skipping...")
+                        continue
                     
                     # Save with transparency
                     result.save(output_path, format='PNG', optimize=True)
@@ -290,118 +288,214 @@ def process_csv(
     csv_path="file_ids.csv",
     download_folder="downloaded_images",
     cropped_folder="cropped_faces",
-    error_log_file="failed_downloads.csv"
+    error_log_file="failed_downloads.csv",
+    progress_file="progress.json",
+    chunk_size=50,
+    request_delay=1.0,
+    max_retries=3
 ):
     """
     Full pipeline: initializes folders, loads IDs, downloads images, and crops faces.
-    Tracks failed downloads and saves them to a CSV file.
+    Handles large datasets with chunked processing and resume capability.
     
     Args:
         csv_path (str): Path to the CSV file containing file IDs
         download_folder (str): Directory to save downloaded images
         cropped_folder (str): Directory to save cropped faces
         error_log_file (str): Path to save the error log CSV
+        progress_file (str): Path to save/load progress
+        chunk_size (int): Number of files to process before saving progress
+        request_delay (float): Delay between requests in seconds
+        max_retries (int): Maximum number of retry attempts for failed downloads
     """
+    import json
     from tqdm import tqdm
     import time
+    from pathlib import Path
     
+    # Initialize folders
     init_folders(download_folder, cropped_folder)
-    file_ids = load_file_ids(csv_path)
+    
+    # Load or initialize progress
+    progress_path = Path(progress_file)
+    if progress_path.exists():
+        try:
+            with open(progress_path, 'r') as f:
+                progress = json.load(f)
+            print(f"\n🔍 Resuming from previous progress (processed {progress.get('processed', 0)} files)")
+        except Exception as e:
+            print(f"⚠️  Could not load progress file: {e}. Starting fresh.")
+            progress = {'processed': 0, 'failed_downloads': [], 'file_ids': []}
+    else:
+        progress = {'processed': 0, 'failed_downloads': [], 'file_ids': []}
+    
+    # Load file IDs and filter out already processed ones
+    all_file_ids = load_file_ids(csv_path)
+    
+    # If we have existing progress, skip already processed files
+    if progress['file_ids'] and len(progress['file_ids']) == len(all_file_ids):
+        file_ids = all_file_ids[progress['processed']:]
+    else:
+        file_ids = all_file_ids
+        progress = {'processed': 0, 'failed_downloads': [], 'file_ids': all_file_ids}
+    
     total_files = len(file_ids)
     
     if total_files == 0:
-        print("❌ No file IDs found in the CSV")
+        print("✅ No new files to process")
+        if progress['failed_downloads']:
+            print(f"⚠️  There were {len(progress['failed_downloads'])} failed downloads from previous runs")
         return
     
     # Initialize tracking
-    failed_downloads = []
     stats = {
-        'processed': 0,
+        'processed': progress['processed'],
         'success': 0,
         'failure': 0,
         'total_faces': 0,
-        'start_time': time.time()
+        'start_time': time.time(),
+        'last_save': time.time()
     }
     
-    print(f"\n🚀 Starting to process {total_files} files...")
+    # Load existing failed downloads if any
+    failed_downloads = progress.get('failed_downloads', [])
+    
+    print(f"\n🚀 Starting to process {total_files} files in chunks of {chunk_size}...")
     print("Press Ctrl+C to stop processing and save progress\n")
     
-    # Initialize progress bar
-    progress_bar = tqdm(
-        file_ids,
-        desc="Processing",
-        unit="file",
-        dynamic_ncols=True,
-        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-    )
+    def save_progress():
+        """Save current progress to resume later"""
+        progress = {
+            'processed': stats['processed'],
+            'file_ids': all_file_ids,
+            'failed_downloads': failed_downloads,
+            'success_count': stats['success'],
+            'failure_count': stats['failure']
+        }
+        with open(progress_file, 'w') as f:
+            json.dump(progress, f, indent=2)
     
+    # Process files in chunks
     try:
-        for file_id in progress_bar:
-            stats['processed'] += 1
-            current_file = f"{file_id}"
-            progress_bar.set_postfix({
-                'Current': current_file[:20] + ('...' if len(current_file) > 20 else ''),
-                'Success': stats['success'],
-                'Failed': stats['failure'],
-                'Faces': stats['total_faces']
-            })
+        for chunk_start in range(0, len(file_ids), chunk_size):
+            chunk = file_ids[chunk_start:chunk_start + chunk_size]
+            chunk_processed = 0
             
-            try:
-                local_path = download_file(file_id, download_folder)
-                if local_path:
-                    cropped_images = crop_faces_mediapipe(
-                        local_path,
-                        cropped_folder=cropped_folder,
-                        base_name=file_id
-                    )
-                    if cropped_images:
-                        stats['success'] += 1
-                        stats['total_faces'] += len(cropped_images)
-                        progress_bar.set_postfix({
-                            'Current': current_file[:20] + ('...' if len(current_file) > 20 else ''),
-                            'Success': stats['success'],
-                            'Failed': stats['failure'],
-                            'Faces': stats['total_faces']
-                        })
-                    else:
-                        stats['failure'] += 1
-                        failed_downloads.append({
-                            'file_id': file_id,
-                            'error': 'No faces detected',
-                            'timestamp': pd.Timestamp.now().isoformat()
-                        })
-                else:
-                    stats['failure'] += 1
-                    failed_downloads.append({
-                        'file_id': file_id,
-                        'error': 'Download failed',
-                        'timestamp': pd.Timestamp.now().isoformat()
+            # Initialize progress bar for current chunk
+            with tqdm(
+                chunk,
+                desc=f"Chunk {chunk_start//chunk_size + 1}/{(len(file_ids)-1)//chunk_size + 1}",
+                unit="file",
+                dynamic_ncols=True,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+            ) as pbar:
+                for file_id in pbar:
+                    current_file = f"{file_id}"
+                    pbar.set_postfix({
+                        'Current': current_file[:20] + ('...' if len(current_file) > 20 else ''),
+                        'Success': stats['success'],
+                        'Failed': stats['failure'],
+                        'Faces': stats['total_faces']
                     })
                     
-            except Exception as e:
-                stats['failure'] += 1
-                error_msg = str(e)
-                failed_downloads.append({
-                    'file_id': file_id,
-                    'error': error_msg,
-                    'timestamp': pd.Timestamp.now().isoformat()
-                })
-                
+                    # Process file with retries
+                    for attempt in range(max_retries + 1):
+                        try:
+                            # Add delay between requests
+                            if attempt > 0:
+                                time.sleep(request_delay * (2 ** attempt))  # Exponential backoff
+                                print(f"\n🔄 Retry {attempt + 1}/{max_retries} for {file_id}")
+                            
+                            local_path = download_file(file_id, download_folder)
+                            if local_path:
+                                cropped_images = crop_faces_mediapipe(
+                                    local_path,
+                                    cropped_folder=cropped_folder,
+                                    base_name=file_id
+                                )
+                                if cropped_images:
+                                    stats['success'] += 1
+                                    stats['total_faces'] += len(cropped_images)
+                                    chunk_processed += 1
+                                    break  # Success, exit retry loop
+                                else:
+                                    if attempt == max_retries:  # Only fail after all retries
+                                        stats['failure'] += 1
+                                        failed_downloads.append({
+                                            'file_id': file_id,
+                                            'error': 'No faces detected',
+                                            'timestamp': pd.Timestamp.now().isoformat(),
+                                            'attempts': attempt + 1
+                                        })
+                            else:
+                                if attempt == max_retries:
+                                    stats['failure'] += 1
+                                    failed_downloads.append({
+                                        'file_id': file_id,
+                                        'error': 'Download failed',
+                                        'timestamp': pd.Timestamp.now().isoformat(),
+                                        'attempts': attempt + 1
+                                    })
+                                    
+                        except Exception as e:
+                            if attempt == max_retries:  # Only fail after all retries
+                                stats['failure'] += 1
+                                failed_downloads.append({
+                                    'file_id': file_id,
+                                    'error': str(e),
+                                    'timestamp': pd.Timestamp.now().isoformat(),
+                                    'attempts': attempt + 1
+                                })
+                                print(f"\n❌ Failed after {max_retries} attempts: {file_id} - {str(e)}")
+                            continue
+                        else:
+                            break  # Successfully processed, exit retry loop
+                    
+                    stats['processed'] += 1
+                    
+                    # Update progress bar
+                    pbar.set_postfix({
+                        'Success': stats['success'],
+                        'Failed': stats['failure'],
+                        'Faces': stats['total_faces']
+                    })
+                    
+                    # Small delay between files to be gentle on the server
+                    time.sleep(request_delay)
+            
+            # Save progress after each chunk
+            save_progress()
+            
+            # Print chunk summary
+            print(f"\n📦 Chunk {chunk_start//chunk_size + 1} complete: "
+                  f"{chunk_processed}/{len(chunk)} files processed successfully")
+            
     except KeyboardInterrupt:
         print("\n\n⚠️  Processing interrupted by user. Saving progress...")
+    except Exception as e:
+        print(f"\n\n❌ Unexpected error: {str(e)}")
+        print("Saving current progress...")
     
     # Calculate and display final statistics
     elapsed_time = time.time() - stats['start_time']
-    minutes, seconds = divmod(int(elapsed_time), 60)
+    hours, remainder = divmod(int(elapsed_time), 3600)
+    minutes, seconds = divmod(remainder, 60)
     
-    print("\n" + "="*50)
-    print(f"✅ Processing Complete!")
+    print("\n" + "="*60)
+    print("✅ Processing Summary")
+    print("="*60)
     print(f"📊 Total Files: {total_files}")
-    print(f"   ├── ✅ Success: {stats['success']}")
-    print(f"   ├── ❌ Failed: {stats['failure']}")
+    print(f"   ├── ✅ Success: {stats['success']} ({stats['success']/total_files*100:.1f}%)")
+    print(f"   ├── ❌ Failed: {stats['failure']} ({stats['failure']/total_files*100:.1f}%)")
     print(f"   └── 😊 Faces Detected: {stats['total_faces']}")
-    print(f"⏱️  Time Elapsed: {minutes}m {seconds}s")
-    print("="*50 + "\n")
+    print(f"\n⏱️  Time Elapsed: {hours:02d}h {minutes:02d}m {seconds:02d}s")
+    if stats['success'] > 0:
+        avg_time = elapsed_time / stats['success']
+        print(f"⏳ Avg. time per file: {avg_time:.1f}s")
+    print("="*60 + "\n")
+    
+    # Save final progress and failed downloads
+    save_progress()
     
     # Save failed downloads to CSV
     if failed_downloads:
