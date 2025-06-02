@@ -140,8 +140,26 @@ def main():
         success_count = 0
         failed_count = 0
         
-        # Create a container for the progress stats
+        # Create containers for progress display
+        progress_container = st.container()
         stats_container = st.container()
+        
+        # Initialize progress display
+        with progress_container:
+            st.subheader("Processing Progress")
+            progress_cols = st.columns(3)
+            with progress_cols[0]:
+                processed_metric = st.metric("Processed", "0/0")
+            with progress_cols[1]:
+                success_metric = st.metric("Success", "0")
+            with progress_cols[2]:
+                failed_metric = st.metric("Failed", "0")
+            
+            st.subheader("Current Status")
+            current_status = st.empty()
+            
+            st.subheader("Recent Activity")
+            activity_log = st.empty()
         
         # Process each file
         for idx, file_id in enumerate(file_ids, 1):
@@ -158,10 +176,15 @@ def main():
                 'error': ''
             }
             
-            try:
-                # Update status
-                short_id = file_id[:15] + '...' if len(file_id) > 15 else file_id
-                status_text.text(f'Processing {idx}/{total_files} - {short_id}')
+            # Update status
+            short_id = file_id[:15] + '...' if len(file_id) > 15 else file_id
+            current_status.text(f'Processing: {short_id}')
+            
+            # Update progress metrics
+            with progress_container:
+                processed_metric.metric("Processed", f"{processed_count}/{total_files}")
+                success_metric.metric("Success", str(success_count))
+                failed_metric.metric("Failed", str(failed_count))
                 
                 # Download the file
                 local_path = download_file(file_id, download_folder)
@@ -195,33 +218,22 @@ def main():
                 processed_count += 1
                 results.append(result)
                 
-                # Update stats display every file
-                with stats_container:
-                    st.subheader("Progress")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Processed", f"{processed_count}/{total_files}")
-                    with col2:
-                        st.metric("Success", str(success_count))
-                    with col3:
-                        st.metric("Failed", str(failed_count))
-                    
-                    # Show recent activity
-                    st.subheader("Recent Activity")
+                # Update activity log
+                with progress_container:
                     recent_results = results[-5:]  # Show last 5 results
+                    activity_messages = []
                     for r in recent_results:
                         if r['status'] == 'success':
-                            st.success(f"✅ {r['file_id'][:20]}... - {r['message']}")
+                            activity_messages.append(f"✅ {r['file_id'][:15]}... - {r['message']}")
                         elif r['status'] in ['failed', 'error']:
-                            st.error(f"❌ {r['file_id'][:20]}... - {r.get('error', 'Unknown error')}")
+                            activity_messages.append(f"❌ {r['file_id'][:15]}... - {r.get('error', 'Unknown error')}")
                         else:
-                            st.info(f"ℹ️ {r['file_id'][:20]}... - {r.get('message', 'Processed')}")
+                            activity_messages.append(f"ℹ️ {r['file_id'][:15]}... - {r.get('message', 'Processed')}")
+                    
+                    # Display all activity messages in one go
+                    activity_log.text("\n".join(activity_messages))
                 
-            except Exception as e:
-                result['status'] = 'error'
-                result['error'] = str(e)
-                failed_count += 1
-                results.append(result)
+
         
         # Processing complete
         progress_bar.empty()
