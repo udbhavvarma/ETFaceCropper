@@ -4,6 +4,7 @@ import time
 import random
 import requests
 import cv2
+from PIL import Image, ImageDraw
 # Configure OpenCV to run in headless mode
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'  # Enable OpenEXR support if needed
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'  # Disable Media Foundation backend
@@ -220,19 +221,36 @@ def crop_faces_mediapipe(
                     print(f"⚠️ Invalid crop dimensions in {os.path.basename(image_path)}")
                     continue
                 
-                # Crop the face
+                # Create a circular mask for the face
                 try:
+                    # Create a black image with the same dimensions as the cropped area
+                    mask = Image.new('L', (x2-x1, y2-y1), 0)
+                    
+                    # Create a white circle on the mask
+                    draw = ImageDraw.Draw(mask)
+                    radius = min(x2-x1, y2-y1) // 2
+                    center = ((x2-x1) // 2, (y2-y1) // 2)
+                    draw.ellipse((center[0]-radius, center[1]-radius, 
+                                 center[0]+radius, center[1]+radius), 
+                                fill=255)
+                    
+                    # Crop and convert the original image to RGB
                     cropped = img[y1:y2, x1:x2]
                     if cropped.size == 0:
                         print(f"⚠️ Empty crop for face {i} in {os.path.basename(image_path)}")
                         continue
                         
-                    # Convert to RGB and save
+                    # Convert to PIL Image and apply the circular mask
                     cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                     cropped_image = Image.fromarray(cropped_rgb)
                     
+                    # Create a new image with transparent background
+                    result = Image.new('RGBA', (x2-x1, y2-y1), (0, 0, 0, 0))
+                    # Paste the cropped image using the mask
+                    result.paste(cropped_image, (0, 0), mask=mask)
+                    
                     # Generate unique filename
-                    out_name = f"{original_name}_face{i+1}_{int(confidence*100)}.jpg"
+                    out_name = f"{original_name}_face{i+1}_{int(confidence*100)}.png"  # Using PNG for transparency
                     output_path = os.path.join(cropped_folder, out_name)
                     
                     # Handle filename conflicts
@@ -242,8 +260,8 @@ def crop_faces_mediapipe(
                         output_path = os.path.join(cropped_folder, f"{name}_{counter}{ext}")
                         counter += 1
                     
-                    # Save with quality settings
-                    cropped_image.save(output_path, quality=95, optimize=True, subsampling=0, qtables='web_high')
+                    # Save with transparency
+                    result.save(output_path, format='PNG', optimize=True)
                     cropped_paths.append(output_path)
                     
                 except Exception as e:
