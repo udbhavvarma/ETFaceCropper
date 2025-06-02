@@ -3,10 +3,24 @@ import os
 import io
 import zipfile
 import tempfile
+import json
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 
 from face_utils import init_folders, load_file_ids, download_file, crop_faces_mediapipe
+
+# Initialize session state
+if 'processing_done' not in st.session_state:
+    st.session_state.processing_done = False
+if 'download_ready' not in st.session_state:
+    st.session_state.download_ready = False
+if 'results' not in st.session_state:
+    st.session_state.results = []
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0
+if 'processing_started' not in st.session_state:
+    st.session_state.processing_started = False
 
 
 def zip_folder(folder_path):
@@ -21,80 +35,44 @@ def zip_folder(folder_path):
     return buffer
 
 
-def process_images(csv_path: str, download_folder: str, cropped_folder: str, progress_bar=None) -> Tuple[List[Dict], int]:
-    """Process all images from the CSV and return results summary."""
-    import time
-    from tqdm import tqdm
-    
-    results = []
-    total_processed = 0
+def process_single_image(file_id: str, download_folder: str, cropped_folder: str) -> Dict:
+    """Process a single image and return the result."""
+    result = {
+        'file_id': file_id,
+        'status': 'processing',
+        'message': '',
+        'faces_detected': 0,
+        'error': ''
+    }
     
     try:
-        ids = load_file_ids(csv_path)
-        total_files = len(ids)
+        # Download the file
+        local_path = download_file(file_id, download_folder)
+        if not local_path or not os.path.exists(local_path):
+            result['status'] = 'failed'
+            result['error'] = 'Download failed or file not found'
+            return result
         
-        # Initialize progress bar if not provided
-        if progress_bar is None:
-            progress_bar = tqdm(
-                total=total_files,
-                desc="Processing",
-                unit="file",
-                dynamic_ncols=True,
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-            )
+        # Process the image
+        cropped_paths = crop_faces_mediapipe(
+            local_path,
+            cropped_folder=cropped_folder,
+            base_name=file_id
+        )
         
-        for idx, file_id in enumerate(ids, start=1):
-            result = {
-                'file_id': file_id,
-                'status': 'processing',
-                'message': '',
-                'faces_detected': 0,
-                'error': ''
-            }
-            
-            # Update progress bar
-            progress_bar.set_postfix({
-                'Current': file_id[:20] + ('...' if len(file_id) > 20 else ''),
-                'Success': len([r for r in results if r.get('status') == 'processed']),
-                'Failed': len([r for r in results if r.get('status') == 'failed'])
-            })
-            
-            try:
-                # Download the file
-                local_path = download_file(file_id, download_folder)
-                if not local_path or not os.path.exists(local_path):
-                    result['status'] = 'failed'
-                    result['error'] = 'Download failed or file not found'
-                    results.append(result)
-                    progress_bar.update(1)
-                    continue
-                
-                # Process the image
-                cropped_paths = crop_faces_mediapipe(
-                    local_path,
-                    cropped_folder=cropped_folder,
-                    base_name=file_id
-                )
-                
-                if not cropped_paths:
-                    result['status'] = 'processed'
-                    result['message'] = 'No faces detected'
-                else:
-                    result['status'] = 'processed'
-                    result['faces_detected'] = len(cropped_paths)
-                    result['message'] = f'Found {len(cropped_paths)} face(s)'
-                    total_processed += 1
-                
-            except Exception as e:
-                result['status'] = 'error'
-                result['error'] = str(e)
-                
-            results.append(result)
+        if not cropped_paths:
+            result['status'] = 'processed'
+            result['message'] = 'No faces detected'
+        else:
+            result['status'] = 'processed'
+            result['faces_detected'] = len(cropped_paths)
+            result['message'] = f'Found {len(cropped_paths)} face(s)'
             
     except Exception as e:
-        return results, total_processed
+        result['status'] = 'error'
+        result['error'] = str(e)
     
-    return results, total_processed
+    return result
 
 def main():
     st.title("Face Cropper Service")
@@ -105,147 +83,131 @@ def main():
 
     # File uploader
     csv_uploader = st.file_uploader("Upload CSV", type=["csv"])
+    
+    # Reset state if new file is uploaded
+    if csv_uploader and not st.session_state.processing_started:
+        st.session_state.processing_done = False
+        st.session_state.download_ready = False
+        st.session_state.results = []
+        st.session_state.current_index = 0
+        st.session_state.processing_started = True
+        st.session_state.file_ids = []
+        st.session_state.tmpdir = None
+    
     if not csv_uploader:
         return
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Initialize paths
-        csv_path = os.path.join(tmpdir, "input.csv")
-        download_folder = os.path.join(tmpdir, "downloads")
-        cropped_folder = os.path.join(tmpdir, "cropped_faces")
+    
+    # Initialize temporary directory and load file IDs if not already done
+    if not hasattr(st.session_state, 'tmpdir') or st.session_state.tmpdir is None:
+        st.session_state.tmpdir = tempfile.TemporaryDirectory()
+        tmpdir = st.session_state.tmpdir.name
         
         # Save uploaded CSV
+        csv_path = os.path.join(tmpdir, "input.csv")
         with open(csv_path, "wb") as f:
             f.write(csv_uploader.getvalue())
         
-        # Initialize folders
-        init_folders(download_folder, cropped_folder)
-        
         # Load file IDs
-        file_ids = load_file_ids(csv_path)
-        total_files = len(file_ids)
+        st.session_state.file_ids = load_file_ids(csv_path)
+        st.session_state.total_files = len(st.session_state.file_ids)
         
-        if total_files == 0:
+        if st.session_state.total_files == 0:
             st.error("No file IDs found in the CSV")
             return
+    else:
+        tmpdir = st.session_state.tmpdir.name
+    
+    # Initialize paths
+    download_folder = os.path.join(tmpdir, "downloads")
+    cropped_folder = os.path.join(tmpdir, "cropped_faces")
+    
+    # Initialize folders
+    init_folders(download_folder, cropped_folder)
+    
+    # Create placeholders for UI elements
+    progress_bar = st.progress(0)
+    progress_container = st.container()
+    
+    # Initialize progress display
+    with progress_container:
+        st.subheader("Processing Progress")
+        progress_cols = st.columns(3)
+        with progress_cols[0]:
+            processed_metric = st.metric("Processed", f"{len(st.session_state.results)}/{st.session_state.total_files}")
+        with progress_cols[1]:
+            success_count = len([r for r in st.session_state.results if r.get('status') == 'processed'])
+            success_metric = st.metric("Success", str(success_count))
+        with progress_cols[2]:
+            failed_count = len([r for r in st.session_state.results if r.get('status') in ['failed', 'error']])
+            failed_metric = st.metric("Failed", str(failed_count))
         
-        # Create placeholders for UI elements
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        results_placeholder = st.empty()
+        st.subheader("Current Status")
+        current_status = st.empty()
         
-        # Initialize results
-        results = []
-        processed_count = 0
-        success_count = 0
-        failed_count = 0
+        st.subheader("Recent Activity")
+        activity_log = st.empty()
+    
+    # Process files one at a time, continuing from where we left off
+    if not st.session_state.processing_done and st.session_state.current_index < len(st.session_state.file_ids):
+        file_id = st.session_state.file_ids[st.session_state.current_index]
+        short_id = file_id[:15] + '...' if len(file_id) > 15 else file_id
+        current_status.text(f'Processing: {short_id}')
         
-        # Create containers for progress display
-        progress_container = st.container()
-        stats_container = st.container()
+        # Process the current image
+        result = process_single_image(file_id, download_folder, cropped_folder)
+        st.session_state.results.append(result)
         
-        # Initialize progress display
+        # Update progress
+        progress = (st.session_state.current_index + 1) / st.session_state.total_files
+        progress_bar.progress(progress)
+        
+        # Update metrics
         with progress_container:
-            st.subheader("Processing Progress")
-            progress_cols = st.columns(3)
-            with progress_cols[0]:
-                processed_metric = st.metric("Processed", "0/0")
-            with progress_cols[1]:
-                success_metric = st.metric("Success", "0")
-            with progress_cols[2]:
-                failed_metric = st.metric("Failed", "0")
+            success_count = len([r for r in st.session_state.results if r.get('status') == 'processed'])
+            failed_count = len([r for r in st.session_state.results if r.get('status') in ['failed', 'error']])
             
-            st.subheader("Current Status")
-            current_status = st.empty()
+            processed_metric.metric("Processed", f"{len(st.session_state.results)}/{st.session_state.total_files}")
+            success_metric.metric("Success", str(success_count))
+            failed_metric.metric("Failed", str(failed_count))
             
-            st.subheader("Recent Activity")
-            activity_log = st.empty()
+            # Show recent activity
+            recent_activity = []
+            for r in st.session_state.results[-5:]:  # Show last 5 results
+                status_icon = "✅" if r['status'] == 'processed' else "❌"
+                recent_activity.append(f"{status_icon} {r['file_id'][:20]}...: {r.get('message', r.get('error', ''))}")
+            
+            activity_log.text("\n".join(recent_activity))
         
-        # Process each file
-        for idx, file_id in enumerate(file_ids, 1):
-            # Update progress
-            progress = idx / total_files
-            progress_bar.progress(progress)
-            
-            # Create result entry
-            result = {
-                'file_id': file_id,
-                'status': 'processing',
-                'message': '',
-                'faces_detected': 0,
-                'error': ''
-            }
-            
-            # Update status
-            short_id = file_id[:15] + '...' if len(file_id) > 15 else file_id
-            current_status.text(f'Processing: {short_id}')
-            
-            # Update progress metrics
-            with progress_container:
-                processed_metric.metric("Processed", f"{processed_count}/{total_files}")
-                success_metric.metric("Success", str(success_count))
-                failed_metric.metric("Failed", str(failed_count))
-                
-                # Download the file
-                local_path = download_file(file_id, download_folder)
-                if not local_path or not os.path.exists(local_path):
-                    result['status'] = 'failed'
-                    result['error'] = 'Download failed or file not found'
-                    failed_count += 1
-                else:
-                    # Process the image
-                    try:
-                        cropped_paths = crop_faces_mediapipe(
-                            local_path,
-                            cropped_folder=cropped_folder,
-                            base_name=file_id
-                        )
-                        
-                        if cropped_paths:
-                            result['status'] = 'success'
-                            result['message'] = f'Found {len(cropped_paths)} face(s)'
-                            result['faces_detected'] = len(cropped_paths)
-                            success_count += 1
-                        else:
-                            result['status'] = 'processed'
-                            result['message'] = 'No faces detected'
-                    except Exception as e:
-                        result['status'] = 'error'
-                        result['error'] = str(e)
-                        failed_count += 1
-                
-                # Update processed count
-                processed_count += 1
-                results.append(result)
-                
-                # Update activity log
-                with progress_container:
-                    recent_results = results[-5:]  # Show last 5 results
-                    activity_messages = []
-                    for r in recent_results:
-                        if r['status'] == 'success':
-                            activity_messages.append(f"✅ {r['file_id'][:15]}... - {r['message']}")
-                        elif r['status'] in ['failed', 'error']:
-                            activity_messages.append(f"❌ {r['file_id'][:15]}... - {r.get('error', 'Unknown error')}")
-                        else:
-                            activity_messages.append(f"ℹ️ {r['file_id'][:15]}... - {r.get('message', 'Processed')}")
-                    
-                    # Display all activity messages in one go
-                    activity_log.text("\n".join(activity_messages))
-                
-
+        # Move to next file
+        st.session_state.current_index += 1
         
-        # Processing complete
-        progress_bar.empty()
-        status_text.success("✅ Processing complete!")
+        # Check if we're done
+        if st.session_state.current_index >= len(st.session_state.file_ids):
+            st.session_state.processing_done = True
+            st.session_state.download_ready = True
+            current_status.text("Processing complete!")
+            
+            # Create zip file
+            zip_buffer = zip_folder(cropped_folder)
+            st.session_state.zip_buffer = zip_buffer
+        else:
+            # Force a rerun to process the next file
+            st.rerun()
+    
+    # Show download button when processing is done
+    if st.session_state.download_ready and 'zip_buffer' in st.session_state:
+        st.success("Processing complete! Click below to download the results.")
+        st.download_button(
+            label="Download Cropped Faces",
+            data=st.session_state.zip_buffer,
+            file_name="cropped_faces.zip",
+            mime="application/zip"
+        )
         
-        # Show summary
-        st.balloons()
-        st.success(f"✅ Processing complete! Processed {processed_count} files.")
-        
-        # Create zip of cropped faces if any were created
-        cropped_files = [f for f in os.listdir(cropped_folder) if f.endswith('.png')]
-        if cropped_files:
+        # Add a button to start a new session
+        if st.button("Process another CSV"):
+            st.session_state.clear()
+            st.rerun()
             st.success(f"Found {len(cropped_files)} cropped faces.")
             
             # Show sample of cropped faces
@@ -285,6 +247,14 @@ if __name__ == "__main__":
     # Add necessary imports at the top of the file
     from PIL import Image
     import pandas as pd
+    
+    # Set page config
+    st.set_page_config(
+        page_title="Face Cropper Service",
+        page_icon="✂️",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
     main()
                         
             
