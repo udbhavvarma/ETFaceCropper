@@ -21,8 +21,11 @@ def zip_folder(folder_path):
     return buffer
 
 
-def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> Tuple[List[Dict], int]:
+def process_images(csv_path: str, download_folder: str, cropped_folder: str, progress_bar=None) -> Tuple[List[Dict], int]:
     """Process all images from the CSV and return results summary."""
+    import time
+    from tqdm import tqdm
+    
     results = []
     total_processed = 0
     
@@ -30,14 +33,31 @@ def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> 
         ids = load_file_ids(csv_path)
         total_files = len(ids)
         
+        # Initialize progress bar if not provided
+        if progress_bar is None:
+            progress_bar = tqdm(
+                total=total_files,
+                desc="Processing",
+                unit="file",
+                dynamic_ncols=True,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+            )
+        
         for idx, file_id in enumerate(ids, start=1):
             result = {
                 'file_id': file_id,
-                'status': 'pending',
+                'status': 'processing',
                 'message': '',
                 'faces_detected': 0,
                 'error': ''
             }
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'Current': file_id[:20] + ('...' if len(file_id) > 20 else ''),
+                'Success': len([r for r in results if r.get('status') == 'processed']),
+                'Failed': len([r for r in results if r.get('status') == 'failed'])
+            })
             
             try:
                 # Download the file
@@ -46,6 +66,7 @@ def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> 
                     result['status'] = 'failed'
                     result['error'] = 'Download failed or file not found'
                     results.append(result)
+                    progress_bar.update(1)
                     continue
                 
                 # Process the image
@@ -82,70 +103,176 @@ def main():
         "The app will download each image, detect & crop faces, and package the results for you."
     )
 
+    # File uploader
     csv_uploader = st.file_uploader("Upload CSV", type=["csv"])
     if not csv_uploader:
         return
 
-    with st.spinner("Processing..."):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Initialize paths
-            csv_path = os.path.join(tmpdir, "input.csv")
-            download_folder = os.path.join(tmpdir, "downloads")
-            cropped_folder = os.path.join(tmpdir, "cropped_faces")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize paths
+        csv_path = os.path.join(tmpdir, "input.csv")
+        download_folder = os.path.join(tmpdir, "downloads")
+        cropped_folder = os.path.join(tmpdir, "cropped_faces")
+        
+        # Save uploaded CSV
+        with open(csv_path, "wb") as f:
+            f.write(csv_uploader.getvalue())
+        
+        # Initialize folders
+        init_folders(download_folder, cropped_folder)
+        
+        # Load file IDs
+        file_ids = load_file_ids(csv_path)
+        total_files = len(file_ids)
+        
+        if total_files == 0:
+            st.error("No file IDs found in the CSV")
+            return
+        
+        # Create placeholders for UI elements
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        results_placeholder = st.empty()
+        
+        # Initialize results
+        results = []
+        processed_count = 0
+        success_count = 0
+        failed_count = 0
+        
+        # Create a container for the progress stats
+        stats_container = st.container()
+        
+        # Process each file
+        for idx, file_id in enumerate(file_ids, 1):
+            # Update progress
+            progress = idx / total_files
+            progress_bar.progress(progress)
             
-            # Save uploaded CSV
-            with open(csv_path, "wb") as f:
-                f.write(csv_uploader.getvalue())
+            # Create result entry
+            result = {
+                'file_id': file_id,
+                'status': 'processing',
+                'message': '',
+                'faces_detected': 0,
+                'error': ''
+            }
             
-            # Initialize folders
-            init_folders(download_folder, cropped_folder)
+            try:
+                # Update status
+                short_id = file_id[:15] + '...' if len(file_id) > 15 else file_id
+                status_text.text(f'Processing {idx}/{total_files} - {short_id}')
+                
+                # Download the file
+                local_path = download_file(file_id, download_folder)
+                if not local_path or not os.path.exists(local_path):
+                    result['status'] = 'failed'
+                    result['error'] = 'Download failed or file not found'
+                    failed_count += 1
+                else:
+                    # Process the image
+                    try:
+                        cropped_paths = crop_faces_mediapipe(
+                            local_path,
+                            cropped_folder=cropped_folder,
+                            base_name=file_id
+                        )
+                        
+                        if cropped_paths:
+                            result['status'] = 'success'
+                            result['message'] = f'Found {len(cropped_paths)} face(s)'
+                            result['faces_detected'] = len(cropped_paths)
+                            success_count += 1
+                        else:
+                            result['status'] = 'processed'
+                            result['message'] = 'No faces detected'
+                    except Exception as e:
+                        result['status'] = 'error'
+                        result['error'] = str(e)
+                        failed_count += 1
+                
+                # Update processed count
+                processed_count += 1
+                results.append(result)
+                
+                # Update stats display every file
+                with stats_container:
+                    st.subheader("Progress")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Processed", f"{processed_count}/{total_files}")
+                    with col2:
+                        st.metric("Success", str(success_count))
+                    with col3:
+                        st.metric("Failed", str(failed_count))
+                    
+                    # Show recent activity
+                    st.subheader("Recent Activity")
+                    recent_results = results[-5:]  # Show last 5 results
+                    for r in recent_results:
+                        if r['status'] == 'success':
+                            st.success(f"✅ {r['file_id'][:20]}... - {r['message']}")
+                        elif r['status'] in ['failed', 'error']:
+                            st.error(f"❌ {r['file_id'][:20]}... - {r.get('error', 'Unknown error')}")
+                        else:
+                            st.info(f"ℹ️ {r['file_id'][:20]}... - {r.get('message', 'Processed')}")
+                
+            except Exception as e:
+                result['status'] = 'error'
+                result['error'] = str(e)
+                failed_count += 1
+                results.append(result)
+        
+        # Processing complete
+        progress_bar.empty()
+        status_text.success("✅ Processing complete!")
+        
+        # Show summary
+        st.balloons()
+        st.success(f"✅ Processing complete! Processed {processed_count} files.")
+        
+        # Create zip of cropped faces if any were created
+        cropped_files = [f for f in os.listdir(cropped_folder) if f.endswith('.png')]
+        if cropped_files:
+            st.success(f"Found {len(cropped_files)} cropped faces.")
             
-            # Process all images
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # Show sample of cropped faces
+            with st.expander("Show Sample Cropped Faces", expanded=True):
+                cols = st.columns(4)
+                for i, img_file in enumerate(cropped_files[:8]):  # Show up to 8 images
+                    try:
+                        img_path = os.path.join(cropped_folder, img_file)
+                        img = Image.open(img_path)
+                        cols[i % 4].image(img, width=150, caption=img_file[:15] + '...')
+                    except Exception as e:
+                        st.error(f"Error displaying {img_file}: {str(e)}")
             
-            # Process images and get results
-            results, total_processed = process_images(csv_path, download_folder, cropped_folder)
+            # Create zip buffer
+            zip_buffer = zip_folder(cropped_folder)
             
-            # Create results dataframe
-            df_results = pd.DataFrame(results)
-            
-            # Show summary
-            st.subheader("Processing Summary")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Total Files", len(df_results))
-            with col2:
-                st.metric("Successfully Processed", total_processed)
-            with col3:
-                failed = len(df_results[df_results['status'] == 'failed'])
-                st.metric("Failed", failed)
-            
-            # Show detailed results
-            with st.expander("View Detailed Results"):
-                st.dataframe(df_results[['file_id', 'status', 'message', 'faces_detected']])
-            
-            # Prepare download
-            if total_processed > 0:
-                with st.spinner("Preparing download..."):
-                    zip_buffer = zip_folder(cropped_folder)
-                    st.download_button(
-                        label=f"Download {total_processed} Cropped Faces",
-                        data=zip_buffer,
-                        file_name="cropped_faces.zip",
-                        mime="application/zip"
-                    )
-            else:
-                st.warning("No faces were detected in any of the processed images.")
-            
-            # Show error log if any
-            if not df_results[df_results['status'] == 'failed'].empty:
-                with st.expander("View Error Log"):
-                    st.write("The following files could not be processed:")
-                    st.dataframe(df_results[df_results['status'] == 'failed'][['file_id', 'error']])
-
-
+            # Download button
+            st.download_button(
+                label='📥 Download All Cropped Faces',
+                data=zip_buffer,
+                file_name='cropped_faces.zip',
+                mime='application/zip',
+                use_container_width=True,
+                help='Download all cropped faces as a ZIP file'
+            )
+        else:
+            st.warning("No faces were detected in any of the processed images.")
+        
+        # Show error log if any
+        if failed_count > 0:
+            with st.expander("View Error Log", expanded=False):
+                st.write("The following files had errors:")
+                error_results = [r for r in results if r['status'] in ['failed', 'error']]
+                st.table(pd.DataFrame(error_results)[['file_id', 'error']])
 
 if __name__ == "__main__":
+    # Add necessary imports at the top of the file
+    from PIL import Image
+    import pandas as pd
     main()
+                        
+            
