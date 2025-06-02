@@ -4,9 +4,9 @@ import io
 import zipfile
 import tempfile
 import pandas as pd
+import time
 from typing import List, Dict, Optional, Tuple
-
-from face_utils import init_folders, load_file_ids, download_file, crop_faces_mediapipe
+from face_utils import init_folders, load_file_ids, download_file, crop_faces_mediapipe, TOTAL_FACES_CROPPED
 
 
 def zip_folder(folder_path):
@@ -21,7 +21,7 @@ def zip_folder(folder_path):
     return buffer
 
 
-def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> Tuple[List[Dict], int]:
+def process_images(csv_path: str, download_folder: str, cropped_folder: str, circular_crop: bool = True) -> Tuple[List[Dict], int]:
     """Process all images from the CSV and return results summary."""
     results = []
     total_processed = 0
@@ -29,6 +29,9 @@ def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> 
     try:
         ids = load_file_ids(csv_path)
         total_files = len(ids)
+        
+        # Create a status container
+        status_placeholder = st.empty()
         
         for idx, file_id in enumerate(ids, start=1):
             result = {
@@ -39,6 +42,15 @@ def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> 
                 'error': ''
             }
             
+            # Update status
+            status_placeholder.markdown(
+                f"""
+                **Processing Progress**  
+                - Files: {idx}/{total_files}  
+                - Faces Cropped: {TOTAL_FACES_CROPPED}
+                """
+            )
+            
             try:
                 # Download the file
                 local_path = download_file(file_id, download_folder)
@@ -48,11 +60,12 @@ def process_images(csv_path: str, download_folder: str, cropped_folder: str) -> 
                     results.append(result)
                     continue
                 
-                # Process the image
+                # Process the image with circular crop option
                 cropped_paths = crop_faces_mediapipe(
                     local_path,
                     cropped_folder=cropped_folder,
-                    base_name=file_id
+                    base_name=file_id,
+                    circular_crop=circular_crop
                 )
                 
                 if not cropped_paths:
@@ -82,6 +95,13 @@ def main():
         "The app will download each image, detect & crop faces, and package the results for you."
     )
 
+    # Add circular crop toggle
+    circular_crop = st.sidebar.checkbox("Use Circular Crop", value=True, 
+                                      help="Crop faces in a circular shape with transparent background")
+    
+    # Display current face count
+    st.sidebar.metric("Total Faces Cropped", TOTAL_FACES_CROPPED)
+    
     csv_uploader = st.file_uploader("Upload CSV", type=["csv"])
     if not csv_uploader:
         return
@@ -105,7 +125,12 @@ def main():
             status_text = st.empty()
             
             # Process images and get results
-            results, total_processed = process_images(csv_path, download_folder, cropped_folder)
+            results, total_processed = process_images(
+                csv_path, 
+                download_folder, 
+                cropped_folder,
+                circular_crop=circular_crop
+            )
             
             # Create results dataframe
             df_results = pd.DataFrame(results)

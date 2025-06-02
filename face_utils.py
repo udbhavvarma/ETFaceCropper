@@ -4,16 +4,19 @@ import time
 import random
 import requests
 import cv2
+import numpy as np
 # Configure OpenCV to run in headless mode
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'  # Enable OpenEXR support if needed
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'  # Disable Media Foundation backend
-import gdown
 import pandas as pd
 import mediapipe as mp
 from PIL import Image
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# Global counter for cropped faces
+TOTAL_FACES_CROPPED = 0
 
 # Initialize MediaPipe face detector
 mp_face = mp.solutions.face_detection
@@ -105,8 +108,10 @@ def crop_faces_mediapipe(
     right_padding_ratio: float = 0.2,
     base_name: str = None,
     min_face_size: int = 1,  # Minimum face size in pixels
-    min_confidence: float = 0.2  # Lower confidence threshold
+    min_confidence: float = 0.2,  # Lower confidence threshold
+    circular_crop: bool = True  # Whether to use circular crop
 ) -> List[str]:
+    global TOTAL_FACES_CROPPED
     """
     Detect and crop faces from an image using MediaPipe with improved error handling.
     
@@ -228,24 +233,39 @@ def crop_faces_mediapipe(
                         print(f"⚠️ Empty crop for face {i} in {os.path.basename(image_path)}")
                         continue
                         
-                    # Convert to RGB and save
-                    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                    cropped_image = Image.fromarray(cropped_rgb)
+                    # Apply circular mask if enabled
+                    if circular_crop:
+                        # Create a circular mask
+                        mask = np.zeros(face_roi.shape[:2], dtype=np.uint8)
+                        center = (face_roi.shape[1] // 2, face_roi.shape[0] // 2)
+                        radius = min(center[0], center[1])
+                        cv2.circle(mask, center, radius, 255, -1)
+                        
+                        # Apply mask to create circular crop
+                        face_roi = cv2.bitwise_and(face_roi, face_roi, mask=mask)
+                        
+                        # Make background transparent
+                        b, g, r = cv2.split(face_roi)
+                        rgba = [b, g, r, mask]
+                        face_roi = cv2.merge(rgba, 4)
                     
-                    # Generate unique filename
-                    out_name = f"{original_name}_face{i+1}_{int(confidence*100)}.jpg"
-                    output_path = os.path.join(cropped_folder, out_name)
+                    # Create output filename
+                    output_filename = f"{original_name}_face_{i+1}.jpg"
+                    output_path = os.path.join(cropped_folder, output_filename)
                     
-                    # Handle filename conflicts
-                    counter = 1
-                    while os.path.exists(output_path):
-                        name, ext = os.path.splitext(out_name)
-                        output_path = os.path.join(cropped_folder, f"{name}_{counter}{ext}")
-                        counter += 1
+                    # Save the cropped face
+                    if circular_crop:
+                        # Save as PNG to support transparency
+                        output_path = output_path.replace('.jpg', '.png')
+                        cv2.imwrite(output_path, face_roi, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+                    else:
+                        cv2.imwrite(output_path, face_roi)
                     
-                    # Save with quality settings
-                    cropped_image.save(output_path, quality=95, optimize=True, subsampling=0, qtables='web_high')
+                    # Update global counter
+                    global TOTAL_FACES_CROPPED
+                    TOTAL_FACES_CROPPED += 1
                     cropped_paths.append(output_path)
+                    print(f"✅ Saved face {i+1} to {output_path} (Total faces cropped: {TOTAL_FACES_CROPPED})")
                     
                 except Exception as e:
                     print(f"⚠️ Error processing face {i+1} in {os.path.basename(image_path)}: {str(e)}")
